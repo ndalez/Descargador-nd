@@ -44,11 +44,8 @@ async def download_media(request: DownloadRequest, background_tasks: BackgroundT
     url = request.url
     is_audio = request.format.lower() == "mp3"
 
-    # Obtener la ruta ejecutable de FFmpeg provista por imageio-ffmpeg
     ffmpeg_exe_path = imageio_ffmpeg.get_ffmpeg_exe()
-    logger.info(f"Ruta de FFmpeg detectada: {ffmpeg_exe_path}")
 
-    # Configuración de formatos con fallback automático
     if is_audio:
         format_spec = 'bestaudio/best'
     else:
@@ -60,20 +57,24 @@ async def download_media(request: DownloadRequest, background_tasks: BackgroundT
         'noplaylist': True,
         'quiet': False,
         'no_warnings': False,
-        'ffmpeg_location': ffmpeg_exe_path,  # Le indicamos a yt-dlp dónde está FFmpeg
-        'cookiefile': 'cookies.txt',
+        'ffmpeg_location': ffmpeg_exe_path,
         'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
             'Accept-Language': 'es-ES,es;q=0.9,en-US;q=0.8,en;q=0.7',
         },
+        # Forzar clientes de YouTube que evitan la verificación de Bot / Sign-in
         'extractor_args': {
             'youtube': {
-                'player_client': ['android', 'ios', 'web']
+                'player_client': ['mweb', 'android', 'ios'],
+                'skip': ['hls', 'dash']
             }
         }
     }
 
-    # Si se pide MP3, usamos FFmpeg para convertir a audio limpio MP3
+    # Cargar cookies solo si el archivo existe en el directorio raíz
+    if os.path.exists('cookies.txt'):
+        ydl_opts['cookiefile'] = 'cookies.txt'
+
     if is_audio:
         ydl_opts['postprocessors'] = [{
             'key': 'FFmpegExtractAudio',
@@ -109,7 +110,7 @@ async def download_media(request: DownloadRequest, background_tasks: BackgroundT
         logger.error(f"Error en yt-dlp: {str(de)}")
         raise HTTPException(
             status_code=400,
-            detail=f"Error en el formato del video: {str(de)}"
+            detail=f"Error en la descarga: {str(de)}"
         )
     except Exception as e:
         logger.error(f"Error inesperado: {str(e)}")
