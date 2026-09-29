@@ -1,5 +1,6 @@
 import os
 import logging
+import imageio_ffmpeg
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -36,46 +37,61 @@ def cleanup_file(filepath: str):
 
 @app.get("/")
 def read_root():
-    return {"status": "ok", "message": "Backend funcionando"}
+    return {"status": "ok", "message": "Backend funcionando correctamente"}
 
 @app.post("/download")
 async def download_media(request: DownloadRequest, background_tasks: BackgroundTasks):
     url = request.url
     is_audio = request.format.lower() == "mp3"
 
-    logger.info(f"Petición recibida - URL: {url} | Formato: {request.format}")
+    # Obtener la ruta ejecutable de FFmpeg provista por imageio-ffmpeg
+    ffmpeg_exe_path = imageio_ffmpeg.get_ffmpeg_exe()
+    logger.info(f"Ruta de FFmpeg detectada: {ffmpeg_exe_path}")
 
-    # Criterio de selección de formato 100% compatible sin requerir FFmpeg
+    # Configuración de formatos con fallback automático
     if is_audio:
-        # Descarga el audio nativo directamente (usualmente m4a o webm)
         format_spec = 'bestaudio/best'
     else:
-        # Descarga el mejor archivo pre-combinado de vídeo y audio directo
-        format_spec = 'best[ext=mp4]/best'
+        format_spec = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'
 
     ydl_opts = {
         'format': format_spec,
         'outtmpl': os.path.join(DOWNLOAD_DIR, '%(title)s.%(ext)s'),
         'noplaylist': True,
-        'quiet': True,
-        'no_warnings': True,
-        'cookiefile': 'cookies.txt',  # Lee las cookies subidas
+        'quiet': False,
+        'no_warnings': False,
+        'ffmpeg_location': ffmpeg_exe_path,  # Le indicamos a yt-dlp dónde está FFmpeg
+        'cookiefile': 'cookies.txt',
         'http_headers': {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept-Language': 'es-ES,es;q=0.9,en-US;q=0.8,en;q=0.7',
         },
         'extractor_args': {
             'youtube': {
-                'player_client': ['android', 'web']
+                'player_client': ['android', 'ios', 'web']
             }
         }
     }
 
+    # Si se pide MP3, usamos FFmpeg para convertir a audio limpio MP3
+    if is_audio:
+        ydl_opts['postprocessors'] = [{
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'mp3',
+            'preferredquality': '192',
+        }]
+
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            logger.info("Iniciando descarga con yt-dlp...")
+            logger.info("Extrayendo e iniciando descarga...")
             info = ydl.extract_info(url, download=True)
             filename = ydl.prepare_filename(info)
+
+            if is_audio:
+                base_name, _ = os.path.splitext(filename)
+                potential_mp3 = f"{base_name}.mp3"
+                if os.path.exists(potential_mp3):
+                    filename = potential_mp3
 
         if not os.path.exists(filename):
             raise HTTPException(status_code=500, detail="El archivo no se pudo encontrar tras la descarga.")
