@@ -25,7 +25,7 @@ class DownloadRequest(BaseModel):
     format: str  # "mp3" o "mp4"
 
 def cleanup_file(filepath: str):
-    """Elimina el archivo borrándolo del servidor después de enviarlo al usuario"""
+    """Elimina el archivo del servidor después de enviarlo al usuario"""
     if os.path.exists(filepath):
         try:
             os.remove(filepath)
@@ -37,13 +37,19 @@ async def download_media(request: DownloadRequest, background_tasks: BackgroundT
     url = request.url
     is_audio = request.format.lower() == "mp3"
 
-    # Configuración optimizada de yt-dlp con autenticación por cookies
+    # Configuración de formatos flexible para evitar "Requested format is not available"
+    if is_audio:
+        format_spec = 'bestaudio/best'
+    else:
+        format_spec = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'
+
     ydl_opts = {
+        'format': format_spec,
         'outtmpl': os.path.join(DOWNLOAD_DIR, '%(title)s.%(ext)s'),
         'noplaylist': True,
         'quiet': True,
         'no_warnings': True,
-        'cookiefile': 'cookies.txt',  # <-- Autenticación con cookies
+        'cookiefile': 'cookies.txt',
         'http_headers': {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept-Language': 'en-US,en;q=0.9',
@@ -56,18 +62,11 @@ async def download_media(request: DownloadRequest, background_tasks: BackgroundT
     }
 
     if is_audio:
-        ydl_opts.update({
-            'format': 'bestaudio/best',
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            }],
-        })
-    else:
-        ydl_opts.update({
-            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-        })
+        ydl_opts['postprocessors'] = [{
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'mp3',
+            'preferredquality': '192',
+        }]
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -82,10 +81,9 @@ async def download_media(request: DownloadRequest, background_tasks: BackgroundT
         if not os.path.exists(filename):
             raise HTTPException(status_code=500, detail="El archivo no se pudo generar.")
 
-        # Nombre del archivo para el cliente
         download_name = os.path.basename(filename)
 
-        # Programar el borrado del archivo temporal una vez completada la transferencia
+        # Borrar el archivo temporal tras enviar la respuesta
         background_tasks.add_task(cleanup_file, filename)
 
         return FileResponse(
