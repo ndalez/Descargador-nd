@@ -1,14 +1,14 @@
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 import yt_dlp
 import os
-import uuid
 import re
-from urllib.parse import quote
 
 app = FastAPI()
 
+# Permitir peticiones desde cualquier origen (CORS)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -17,101 +17,82 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Crear la carpeta de descargas temporales si no existe
 DOWNLOAD_DIR = "temp_downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
-def limpiar_nombre(nombre: str) -> str:
-    # Quitar caracteres no permitidos en nombres de archivos
-    return re.sub(r'[\\/*?:"<>|]', "", nombre)
+class DownloadRequest(BaseModel):
+    url: str
+    format: str  # "mp3" o "mp4"
 
-# Función para eliminar archivos temporales del servidor tras ser entregados
-def borrar_archivo(file_path: str):
-    try:
-        if os.path.exists(file_path):
-            os.remove(file_path)
-    except Exception as e:
-        print(f"Error al eliminar archivo temporal: {e}")
+def cleanup_file(filepath: str):
+    """Elimina el archivo borrándolo del servidor después de enviarlo al usuario"""
+    if os.path.exists(filepath):
+        try:
+            os.remove(filepath)
+        except Exception as e:
+            print(f"Error limpiando archivo {filepath}: {e}")
 
-@app.post("/api/download")
-async def download_media(data: dict):
-    url = data.get("url")
-    format_type = data.get("format")  # 'mp3' o 'mp4'
-    quality = data.get("quality", "720")
+@app.post("/download")
+async def download_media(request: DownloadRequest, background_tasks: BackgroundTasks):
+    url = request.url
+    is_audio = request.format.lower() == "mp3"
 
-    if not url:
-        raise HTTPException(status_code=400, detail="URL no proporcionada")
-
-    # Usar ID único corto para evitar colisiones
-    file_id = str(uuid.uuid4())[:8]
-    output_template = f"{DOWNLOAD_DIR}/{file_id}_%(title)s.%(ext)s"
-
-    base_opts = {
-        'outtmpl': output_template,
+    # Configuración optimizada de yt-dlp para evitar bloqueos por bot
+    ydl_opts = {
+        'outtmpl': os.path.join(DOWNLOAD_DIR, '%(title)s.%(ext)s'),
+        'noplaylist': True,
         'quiet': True,
         'no_warnings': True,
-        'nocheckcertificate': True,
-        'noplaylist': True,
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept-Language': 'en-US,en;q=0.9',
+        },
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android', 'ios', 'web']
+            }
+        }
     }
 
-    if format_type == "mp3":
-        ydl_opts = {
-            **base_opts,
+    if is_audio:
+        ydl_opts.update({
             'format': 'bestaudio/best',
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'mp3',
                 'preferredquality': '192',
             }],
-        }
+        })
     else:
-        ydl_opts = {
-            **base_opts,
-            'format': f'bestvideo[height<={quality}][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-            'merge_output_format': 'mp4',
-        }
+        ydl_opts.update({
+            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+        })
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
-            titulo_original = info.get("title", "cancion")
-            titulo_limpio = limpiar_nombre(titulo_original)
-
-            # Buscar el archivo generado en la carpeta temporal
-            ext = "mp3" if format_type == "mp3" else "mp4"
-            archivo_generado = None
+            filename = ydl.prepare_filename(info)
             
-            for file in os.listdir(DOWNLOAD_DIR):
-                if file.startswith(file_id) and file.endswith(f".{ext}"):
-                    archivo_generado = file
-                    break
+            # Ajustar la extensión si se convirtió a MP3
+            if is_audio:
+                base, _ = os.path.splitext(filename)
+                filename = f"{base}.mp3"
 
-            if not archivo_generado:
-                raise HTTPException(status_code=500, detail="No se pudo localizar el archivo descargado.")
+        if not os.path.exists(filename):
+            raise HTTPException(status_code=500, detail="El archivo no se pudo generar.")
 
-            return {
-                "status": "success",
-                "title": titulo_limpio,
-                "file_name_server": archivo_generado,
-                "download_url": f"/api/get-file/{archivo_generado}?title={quote(titulo_limpio)}&ext={ext}"
-            }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        # Nombre del archivo para el cliente
+        download_name = os.path.basename(filename)
 
-@app.get("/api/get-file/{file_name_server}")
-async def get_file(file_name_server: str, title: str, ext: str, background_tasks: BackgroundTasks):
-    file_path = os.path.join(DOWNLOAD_DIR, file_name_server)
-    
-    if os.path.exists(file_path):
-        nombre_descarga = f"{title}.{ext}"
-        
-        # Se programa la eliminación automática del archivo en el servidor después de enviarlo
-        background_tasks.add_task(borrar_archivo, file_path)
-        
+        # Programar el borrado del archivo temporal una vez completada la transferencia
+        background_tasks.add_task(cleanup_file, filename)
+
         return FileResponse(
-            file_path, 
-            filename=nombre_descarga,
-            media_type="application/octet-stream",
-            headers={"Content-Disposition": f'attachment; filename="{quote(nombre_descarga)}"'}
+            path=filename,
+            filename=download_name,
+            media_type="application/octet-stream"
         )
-    
-    raise HTTPException(status_code=404, detail="Archivo no encontrado")
+
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
