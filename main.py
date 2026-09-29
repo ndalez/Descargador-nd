@@ -1,44 +1,3 @@
-import os
-import logging
-import imageio_ffmpeg
-from fastapi import FastAPI, HTTPException, BackgroundTasks
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
-from pydantic import BaseModel
-import yt_dlp
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("yt_downloader")
-
-app = FastAPI(title="YouTube Downloader API")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-DOWNLOAD_DIR = "temp_downloads"
-os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-
-class DownloadRequest(BaseModel):
-    url: str
-    format: str  # "mp3" o "mp4"
-
-def cleanup_file(filepath: str):
-    if os.path.exists(filepath):
-        try:
-            os.remove(filepath)
-            logger.info(f"Archivo eliminado correctamente: {filepath}")
-        except Exception as e:
-            logger.error(f"Error al eliminar archivo {filepath}: {e}")
-
-@app.get("/")
-def read_root():
-    return {"status": "ok", "message": "Backend funcionando correctamente"}
-
 @app.post("/download")
 async def download_media(request: DownloadRequest, background_tasks: BackgroundTasks):
     url = request.url
@@ -46,10 +5,12 @@ async def download_media(request: DownloadRequest, background_tasks: BackgroundT
 
     ffmpeg_exe_path = imageio_ffmpeg.get_ffmpeg_exe()
 
+    # Formatos más flexibles y compatibles
     if is_audio:
         format_spec = 'bestaudio/best'
     else:
-        format_spec = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'
+        # Pide el mejor video + mejor audio y permite que FFmpeg los unifique a MP4
+        format_spec = 'bestvideo+bestaudio/best'
 
     ydl_opts = {
         'format': format_spec,
@@ -62,16 +23,15 @@ async def download_media(request: DownloadRequest, background_tasks: BackgroundT
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
             'Accept-Language': 'es-ES,es;q=0.9,en-US;q=0.8,en;q=0.7',
         },
-        # Forzar clientes de YouTube que evitan la verificación de Bot / Sign-in
+        # Se elimina 'skip': ['hls', 'dash'] para permitir obtener todos los formatos
         'extractor_args': {
             'youtube': {
-                'player_client': ['mweb', 'android', 'ios'],
-                'skip': ['hls', 'dash']
+                'player_client': ['android', 'ios', 'web']
             }
         }
     }
 
-    # Cargar cookies solo si el archivo existe en el directorio raíz
+    # Cargar cookies solo si existe el archivo
     if os.path.exists('cookies.txt'):
         ydl_opts['cookiefile'] = 'cookies.txt'
 
@@ -81,6 +41,9 @@ async def download_media(request: DownloadRequest, background_tasks: BackgroundT
             'preferredcodec': 'mp3',
             'preferredquality': '192',
         }]
+    else:
+        # Asegura que el contenedor final del video sea MP4
+        ydl_opts['merge_output_format'] = 'mp4'
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -88,11 +51,17 @@ async def download_media(request: DownloadRequest, background_tasks: BackgroundT
             info = ydl.extract_info(url, download=True)
             filename = ydl.prepare_filename(info)
 
+            # Ajuste de extensión si cambió tras el postprocesamiento
             if is_audio:
                 base_name, _ = os.path.splitext(filename)
                 potential_mp3 = f"{base_name}.mp3"
                 if os.path.exists(potential_mp3):
                     filename = potential_mp3
+            else:
+                base_name, _ = os.path.splitext(filename)
+                potential_mp4 = f"{base_name}.mp4"
+                if os.path.exists(potential_mp4):
+                    filename = potential_mp4
 
         if not os.path.exists(filename):
             raise HTTPException(status_code=500, detail="El archivo no se pudo encontrar tras la descarga.")
