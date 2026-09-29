@@ -4,7 +4,6 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 import yt_dlp
 import os
-import re
 
 app = FastAPI()
 
@@ -38,12 +37,13 @@ async def download_media(request: DownloadRequest, background_tasks: BackgroundT
     url = request.url
     is_audio = request.format.lower() == "mp3"
 
-    # Configuración optimizada de yt-dlp para evitar bloqueos por bot
+    # Configuración optimizada de yt-dlp con autenticación por cookies
     ydl_opts = {
         'outtmpl': os.path.join(DOWNLOAD_DIR, '%(title)s.%(ext)s'),
         'noplaylist': True,
         'quiet': True,
         'no_warnings': True,
+        'cookiefile': 'cookies.txt',  # <-- Autenticación con cookies
         'http_headers': {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept-Language': 'en-US,en;q=0.9',
