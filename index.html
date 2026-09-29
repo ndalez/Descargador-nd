@@ -100,7 +100,6 @@
         const urlInput = document.getElementById('url');
         const url = urlInput.value.trim();
         const tipo = document.querySelector('input[name="tipo"]:checked').value;
-        const calidad = document.getElementById('calidad').value;
         const btn = document.getElementById('btn-descargar');
         const status = document.getElementById('status');
         const progressBox = document.getElementById('progress-box');
@@ -121,33 +120,41 @@
         status.innerText = "⏳ Descargando y convirtiendo en el servidor...";
 
         try {
-            const res = await fetch(`${BACKEND_URL}/api/download`, {
+            const res = await fetch(`${BACKEND_URL}/download`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ url, format: tipo, quality: calidad })
+                body: JSON.stringify({ url, format: tipo })
             });
 
-            const data = await res.json();
-
             if (res.ok) {
+                const blob = await res.blob();
                 progressBar.style.width = "100%";
                 progressBar.classList.remove("animated");
 
                 status.className = "status success";
-                status.innerText = `✅ ¡Descarga lista! Se guardará como: "${data.title}.${tipo}"`;
+                status.innerText = `✅ ¡Descarga lista! Guardando archivo...`;
                 
-                // Forzar descarga única mediante enlace de descarga
-                const fileUrl = `${BACKEND_URL}${data.download_url}`;
+                // Obtener nombre de archivo si viene en las cabeceras o generar uno
+                const contentDisposition = res.headers.get('content-disposition');
+                let fileName = `descarga.${tipo}`;
+                if (contentDisposition) {
+                    const match = contentDisposition.match(/filename="?([^"]+)"?/);
+                    if (match && match[1]) fileName = match[1];
+                }
+
+                const fileUrl = window.URL.createObjectURL(blob);
                 const a = document.createElement("a");
                 a.href = fileUrl;
-                a.download = `${data.title}.${tipo}`;
+                a.download = fileName;
                 document.body.appendChild(a);
                 a.click();
                 a.remove();
+                window.URL.revokeObjectURL(fileUrl);
             } else {
+                const errorData = await res.json().catch(() => ({ detail: "Error en el servidor" }));
                 progressBar.style.width = "0%";
                 status.className = "status error";
-                status.innerText = "❌ Error: " + (data.detail || "No se pudo procesar el video");
+                status.innerText = "❌ Error: " + (errorData.detail || "No se pudo procesar el video");
             }
         } catch (e) {
             progressBar.style.width = "0%";
