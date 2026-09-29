@@ -37,11 +37,11 @@ async def download_media(request: DownloadRequest, background_tasks: BackgroundT
     url = request.url
     is_audio = request.format.lower() == "mp3"
 
-    # Configuración de formatos flexible para evitar "Requested format is not available"
+    # Selección de formato compatible sin requerir FFmpeg obligatorio
     if is_audio:
-        format_spec = 'bestaudio/best'
+        format_spec = 'ba/b'  # Descarga el mejor audio disponible (bestaudio)
     else:
-        format_spec = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'
+        format_spec = 'b/best' # Descarga el mejor formato unificado de video+audio
 
     ydl_opts = {
         'format': format_spec,
@@ -61,22 +61,10 @@ async def download_media(request: DownloadRequest, background_tasks: BackgroundT
         }
     }
 
-    if is_audio:
-        ydl_opts['postprocessors'] = [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'mp3',
-            'preferredquality': '192',
-        }]
-
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             filename = ydl.prepare_filename(info)
-            
-            # Ajustar la extensión si se convirtió a MP3
-            if is_audio:
-                base, _ = os.path.splitext(filename)
-                filename = f"{base}.mp3"
 
         if not os.path.exists(filename):
             raise HTTPException(status_code=500, detail="El archivo no se pudo generar.")
