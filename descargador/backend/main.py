@@ -58,7 +58,9 @@ async def download_media(data: dict):
         f"{DOWNLOAD_DIR}/{file_id}_%(title)s.%(ext)s"
     )
 
-    # Configuración base de yt-dlp
+    # ==========================================
+    # CONFIGURACIÓN BASE DE YT-DLP
+    # ==========================================
     base_opts = {
         "outtmpl": output_template,
         "quiet": True,
@@ -66,11 +68,10 @@ async def download_media(data: dict):
         "nocheckcertificate": True,
         "noplaylist": True,
 
-        # Configuración YouTube + PO Token
+        # ======================================
+        # PO TOKEN - BGUTIL
+        # ======================================
         "extractor_args": {
-            "youtube": {
-                "player_client": ["mweb"]
-            },
             "youtubepot-bgutilhttp": {
                 "base_url": "http://127.0.0.1:4416"
             }
@@ -214,7 +215,6 @@ async def get_file(
             f"{title}.{ext}"
         )
 
-        # Eliminar después de enviar
         background_tasks.add_task(
             borrar_archivo,
             file_path
