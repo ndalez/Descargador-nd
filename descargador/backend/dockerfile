@@ -1,20 +1,30 @@
 FROM python:3.11-slim
 
+# Instalar FFmpeg, curl y Deno
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg \
+    && apt-get install -y --no-install-recommends ffmpeg curl unzip \
+    && curl -fsSL https://deno.land/install.sh | sh \
+    && mv /root/.deno/bin/deno /usr/local/bin/deno \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
+# Directorio de trabajo
 WORKDIR /app
 
+# Copiar dependencias
 COPY requirements.txt .
 
+# Instalar dependencias Python
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Copiar aplicación
 COPY main.py .
 
+# Crear carpeta para descargas
 RUN mkdir -p temp_downloads
 
+# Puerto de Render
 EXPOSE 10000
 
+# Iniciar FastAPI
 CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-10000}"]
