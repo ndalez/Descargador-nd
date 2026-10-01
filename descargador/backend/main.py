@@ -35,6 +35,7 @@ def borrar_archivo(file_path: str):
 
 @app.post("/api/download")
 async def download_media(data: dict):
+
     url = data.get("url")
     format_type = data.get("format")
     quality = data.get("quality", "720")
@@ -65,19 +66,27 @@ async def download_media(data: dict):
         "nocheckcertificate": True,
         "noplaylist": True,
 
-        # Proveedor PO Token de BgUtils
+        # Configuración YouTube + PO Token
         "extractor_args": {
+            "youtube": {
+                "player_client": ["mweb"]
+            },
             "youtubepot-bgutilhttp": {
                 "base_url": "http://127.0.0.1:4416"
             }
         },
     }
 
+    # =========================
     # MP3
+    # =========================
     if format_type == "mp3":
+
         ydl_opts = {
             **base_opts,
+
             "format": "bestaudio/best",
+
             "postprocessors": [
                 {
                     "key": "FFmpegExtractAudio",
@@ -87,25 +96,32 @@ async def download_media(data: dict):
             ],
         }
 
+    # =========================
     # MP4
+    # =========================
     else:
+
         ydl_opts = {
             **base_opts,
+
             "format": (
                 f"bestvideo[height<={quality}][ext=mp4]"
                 "+bestaudio[ext=m4a]"
                 "/best[ext=mp4]"
                 "/best"
             ),
+
             "merge_output_format": "mp4",
         }
 
     try:
+
         print(f"Descargando: {url}")
         print(f"Formato: {format_type}")
         print(f"Calidad: {quality}")
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+
             info = ydl.extract_info(
                 url,
                 download=True
@@ -129,8 +145,9 @@ async def download_media(data: dict):
 
             archivo_generado = None
 
-            # Buscar archivo descargado
+            # Buscar archivo generado
             for file in os.listdir(DOWNLOAD_DIR):
+
                 if (
                     file.startswith(file_id)
                     and file.endswith(f".{ext}")
@@ -139,6 +156,7 @@ async def download_media(data: dict):
                     break
 
             if not archivo_generado:
+
                 raise HTTPException(
                     status_code=500,
                     detail=(
@@ -149,8 +167,11 @@ async def download_media(data: dict):
 
             return {
                 "status": "success",
+
                 "title": titulo_limpio,
+
                 "file_name_server": archivo_generado,
+
                 "download_url": (
                     f"/api/get-file/"
                     f"{archivo_generado}"
@@ -163,7 +184,10 @@ async def download_media(data: dict):
         raise
 
     except Exception as e:
-        print(f"ERROR yt-dlp: {str(e)}")
+
+        print(
+            f"ERROR yt-dlp: {str(e)}"
+        )
 
         raise HTTPException(
             status_code=500,
@@ -178,6 +202,7 @@ async def get_file(
     ext: str,
     background_tasks: BackgroundTasks,
 ):
+
     file_path = os.path.join(
         DOWNLOAD_DIR,
         file_name_server
@@ -185,9 +210,11 @@ async def get_file(
 
     if os.path.exists(file_path):
 
-        nombre_descarga = f"{title}.{ext}"
+        nombre_descarga = (
+            f"{title}.{ext}"
+        )
 
-        # Eliminar archivo después de enviarlo
+        # Eliminar después de enviar
         background_tasks.add_task(
             borrar_archivo,
             file_path
@@ -195,8 +222,11 @@ async def get_file(
 
         return FileResponse(
             file_path,
+
             filename=nombre_descarga,
+
             media_type="application/octet-stream",
+
             headers={
                 "Content-Disposition": (
                     f'attachment; '
@@ -213,6 +243,7 @@ async def get_file(
 
 @app.get("/")
 async def root():
+
     return {
         "status": "online",
         "message": "Servidor funcionando correctamente"
