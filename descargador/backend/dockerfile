@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-# Instalar herramientas necesarias
+# Herramientas necesarias
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ffmpeg \
@@ -14,39 +14,35 @@ RUN apt-get update \
 RUN curl -fsSL https://deno.land/install.sh | sh \
     && mv /root/.deno/bin/deno /usr/local/bin/deno
 
-# Directorio de trabajo
+# Directorio principal
 WORKDIR /app
 
-# Copiar dependencias Python
+# Dependencias Python
 COPY requirements.txt .
 
-# Instalar FastAPI, yt-dlp y plugins
 RUN pip install --no-cache-dir -r requirements.txt \
     && pip install --no-cache-dir -U bgutil-ytdlp-pot-provider
 
-# Descargar BgUtils PO Token Provider
+# Descargar BgUtils
 RUN git clone \
     --single-branch \
     --branch 2.0.0 \
     https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git \
     /app/bgutil-ytdlp-pot-provider
 
-# Instalar dependencias del servidor BgUtils
+# Instalar dependencias de BgUtils
 WORKDIR /app/bgutil-ytdlp-pot-provider/server
 
 RUN deno install --allow-scripts=npm:canvas --frozen
 
-# Volver a nuestra aplicación
+# Volver a la aplicación
 WORKDIR /app
 
-# Copiar nuestra aplicación FastAPI
 COPY main.py .
 
-# Crear carpeta de descargas
 RUN mkdir -p temp_downloads
 
-# Puerto de Render
 EXPOSE 10000
 
-# Iniciar BgUtils + FastAPI
-CMD ["sh", "-c", "cd /app/bgutil-ytdlp-pot-provider/server/node_modules && deno run --allow-env --allow-net --allow-ffi=. --allow-read=. ../src/main.ts --host 127.0.0.1 --port 4416 & uvicorn main:app --host 0.0.0.0 --port ${PORT:-10000}"]
+# Iniciar BgUtils y FastAPI
+CMD ["sh", "-c", "cd /app/bgutil-ytdlp-pot-provider/server && deno run --allow-env --allow-net --allow-ffi=./node_modules --allow-read=. src/main.ts --host 127.0.0.1 --port 4416 & uvicorn main:app --host 0.0.0.0 --port ${PORT:-10000}"]
