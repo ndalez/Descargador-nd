@@ -1,89 +1,338 @@
-@app.post("/download")
-async def download_media(request: DownloadRequest, background_tasks: BackgroundTasks):
-    url = request.url
-    is_audio = request.format.lower() == "mp3"
+from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+import yt_dlp
+import os
+import uuid
+import re
+from urllib.parse import quote
 
-    ffmpeg_exe_path = imageio_ffmpeg.get_ffmpeg_exe()
+app = FastAPI()
 
-    # Formatos más flexibles y compatibles
-    if is_audio:
-        format_spec = 'bestaudio/best'
-    else:
-        # Pide el mejor video + mejor audio y permite que FFmpeg los unifique a MP4
-        format_spec = 'bestvideo+bestaudio/best'
+# =========================================================
+# CORS
+# =========================================================
 
-    ydl_opts = {
-        'format': format_spec,
-        'outtmpl': os.path.join(DOWNLOAD_DIR, '%(title)s.%(ext)s'),
-        'noplaylist': True,
-        'quiet': False,
-        'no_warnings': False,
-        'ffmpeg_location': ffmpeg_exe_path,
-        'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-            'Accept-Language': 'es-ES,es;q=0.9,en-US;q=0.8,en;q=0.7',
-        },
-        # Se elimina 'skip': ['hls', 'dash'] para permitir obtener todos los formatos
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['android', 'ios', 'web']
-            }
-        }
-    }
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-    # Cargar cookies solo si existe el archivo
-    if os.path.exists('cookies.txt'):
-        ydl_opts['cookiefile'] = 'cookies.txt'
+# =========================================================
+# CARPETA TEMPORAL
+# =========================================================
 
-    if is_audio:
-        ydl_opts['postprocessors'] = [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'mp3',
-            'preferredquality': '192',
-        }]
-    else:
-        # Asegura que el contenedor final del video sea MP4
-        ydl_opts['merge_output_format'] = 'mp4'
+DOWNLOAD_DIR = "temp_downloads"
+os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
+
+# =========================================================
+# LIMPIAR NOMBRE DEL ARCHIVO
+# =========================================================
+
+def limpiar_nombre(nombre: str) -> str:
+    """
+    Elimina caracteres que pueden causar problemas
+    en los nombres de archivos.
+    """
+    nombre = re.sub(r'[\\/*?:"<>|]', "", nombre)
+    nombre = nombre.strip()
+
+    if not nombre:
+        nombre = "descarga"
+
+    return nombre
+
+
+# =========================================================
+# ELIMINAR ARCHIVO DESPUÉS DE DESCARGAR
+# =========================================================
+
+def borrar_archivo(file_path: str):
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            logger.info("Extrayendo e iniciando descarga...")
-            info = ydl.extract_info(url, download=True)
-            filename = ydl.prepare_filename(info)
+        if os.path.exists(file_path):
+            os.remove(file_path)
+            print(f"Archivo eliminado: {file_path}")
+    except Exception as e:
+        print(f"Error al eliminar archivo temporal: {e}")
 
-            # Ajuste de extensión si cambió tras el postprocesamiento
-            if is_audio:
-                base_name, _ = os.path.splitext(filename)
-                potential_mp3 = f"{base_name}.mp3"
-                if os.path.exists(potential_mp3):
-                    filename = potential_mp3
-            else:
-                base_name, _ = os.path.splitext(filename)
-                potential_mp4 = f"{base_name}.mp4"
-                if os.path.exists(potential_mp4):
-                    filename = potential_mp4
 
-        if not os.path.exists(filename):
-            raise HTTPException(status_code=500, detail="El archivo no se pudo encontrar tras la descarga.")
+# =========================================================
+# DESCARGAR VIDEO / AUDIO
+# =========================================================
 
-        download_name = os.path.basename(filename)
-        background_tasks.add_task(cleanup_file, filename)
+@app.post("/api/download")
+async def download_media(data: dict):
 
-        return FileResponse(
-            path=filename,
-            filename=download_name,
-            media_type="application/octet-stream"
-        )
+    url = data.get("url")
+    format_type = data.get("format")
+    quality = data.get("quality", "720")
 
-    except yt_dlp.utils.DownloadError as de:
-        logger.error(f"Error en yt-dlp: {str(de)}")
+    # -----------------------------------------------------
+    # VALIDAR URL
+    # -----------------------------------------------------
+
+    if not url:
         raise HTTPException(
             status_code=400,
-            detail=f"Error en la descarga: {str(de)}"
+            detail="URL de YouTube no proporcionada"
         )
+
+    # -----------------------------------------------------
+    # VALIDAR FORMATO
+    # -----------------------------------------------------
+
+    if format_type not in ["mp3", "mp4"]:
+        raise HTTPException(
+            status_code=400,
+            detail="Formato no válido. Usa mp3 o mp4."
+        )
+
+    # -----------------------------------------------------
+    # VALIDAR CALIDAD
+    # -----------------------------------------------------
+
+    allowed_quality = ["1080", "720", "480", "360"]
+
+    if quality not in allowed_quality:
+        quality = "720"
+
+    # -----------------------------------------------------
+    # ID ÚNICO
+    # -----------------------------------------------------
+
+    file_id = str(uuid.uuid4())[:8]
+
+    output_template = os.path.join(
+        DOWNLOAD_DIR,
+        f"{file_id}_%(title)s.%(ext)s"
+    )
+
+    # -----------------------------------------------------
+    # CONFIGURACIÓN BASE DE YT-DLP
+    # -----------------------------------------------------
+
+    base_opts = {
+        "outtmpl": output_template,
+        "quiet": True,
+        "no_warnings": True,
+        "noplaylist": True,
+        "nocheckcertificate": True,
+    }
+
+    # =====================================================
+    # CONFIGURACIÓN MP3
+    # =====================================================
+
+    if format_type == "mp3":
+
+        ydl_opts = {
+            **base_opts,
+
+            "format": "bestaudio/best",
+
+            "postprocessors": [
+                {
+                    "key": "FFmpegExtractAudio",
+                    "preferredcodec": "mp3",
+                    "preferredquality": "192",
+                }
+            ],
+        }
+
+    # =====================================================
+    # CONFIGURACIÓN MP4
+    # =====================================================
+
+    else:
+
+        ydl_opts = {
+            **base_opts,
+
+            "format": (
+                f"bestvideo[height<={quality}][ext=mp4]"
+                f"+bestaudio[ext=m4a]/"
+                f"best[ext=mp4]/best"
+            ),
+
+            "merge_output_format": "mp4",
+        }
+
+    # =====================================================
+    # DESCARGAR
+    # =====================================================
+
+    try:
+
+        print(f"Descargando: {url}")
+        print(f"Formato: {format_type}")
+        print(f"Calidad: {quality}")
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+
+            info = ydl.extract_info(
+                url,
+                download=True
+            )
+
+        # -------------------------------------------------
+        # OBTENER TÍTULO
+        # -------------------------------------------------
+
+        titulo_original = info.get(
+            "title",
+            "descarga"
+        )
+
+        titulo_limpio = limpiar_nombre(
+            titulo_original
+        )
+
+        # -------------------------------------------------
+        # BUSCAR ARCHIVO GENERADO
+        # -------------------------------------------------
+
+        extension = format_type
+
+        archivo_generado = None
+
+        for file in os.listdir(DOWNLOAD_DIR):
+
+            if (
+                file.startswith(file_id)
+                and file.lower().endswith(
+                    f".{extension}"
+                )
+            ):
+                archivo_generado = file
+                break
+
+        # -------------------------------------------------
+        # VERIFICAR ARCHIVO
+        # -------------------------------------------------
+
+        if not archivo_generado:
+
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "La descarga terminó, "
+                    "pero no se encontró el archivo generado."
+                )
+            )
+
+        # -------------------------------------------------
+        # URL PARA DESCARGAR EL ARCHIVO
+        # -------------------------------------------------
+
+        download_url = (
+            f"/api/get-file/"
+            f"{quote(archivo_generado)}"
+            f"?title={quote(titulo_limpio)}"
+            f"&ext={extension}"
+        )
+
+        print(
+            f"Archivo generado: {archivo_generado}"
+        )
+
+        # -------------------------------------------------
+        # RESPUESTA AL HTML
+        # -------------------------------------------------
+
+        return {
+            "status": "success",
+            "title": titulo_limpio,
+            "file_name_server": archivo_generado,
+            "download_url": download_url
+        }
+
+    # =====================================================
+    # ERRORES
+    # =====================================================
+
+    except HTTPException:
+        raise
+
     except Exception as e:
-        logger.error(f"Error inesperado: {str(e)}")
+
+        print(
+            f"ERROR durante la descarga: {str(e)}"
+        )
+
         raise HTTPException(
             status_code=500,
-            detail=f"Ocurrió un error en el servidor: {str(e)}"
+            detail=str(e)
         )
+
+
+# =========================================================
+# ENTREGAR ARCHIVO AL USUARIO
+# =========================================================
+
+@app.get("/api/get-file/{file_name_server}")
+async def get_file(
+    file_name_server: str,
+    title: str,
+    ext: str,
+    background_tasks: BackgroundTasks
+):
+
+    file_path = os.path.join(
+        DOWNLOAD_DIR,
+        file_name_server
+    )
+
+    # -----------------------------------------------------
+    # VERIFICAR QUE EXISTE
+    # -----------------------------------------------------
+
+    if not os.path.exists(file_path):
+
+        raise HTTPException(
+            status_code=404,
+            detail="Archivo no encontrado o ya eliminado."
+        )
+
+    # -----------------------------------------------------
+    # NOMBRE FINAL
+    # -----------------------------------------------------
+
+    nombre_descarga = (
+        f"{limpiar_nombre(title)}.{ext}"
+    )
+
+    # -----------------------------------------------------
+    # ELIMINAR DESPUÉS DE ENVIAR
+    # -----------------------------------------------------
+
+    background_tasks.add_task(
+        borrar_archivo,
+        file_path
+    )
+
+    # -----------------------------------------------------
+    # ENVIAR ARCHIVO
+    # -----------------------------------------------------
+
+    return FileResponse(
+        path=file_path,
+        filename=nombre_descarga,
+        media_type="application/octet-stream"
+    )
+
+
+# =========================================================
+# RUTA DE PRUEBA
+# =========================================================
+
+@app.get("/")
+async def root():
+
+    return {
+        "status": "online",
+        "message": "Servidor de descarga funcionando correctamente"
+    }
